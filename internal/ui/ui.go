@@ -1,35 +1,146 @@
 package ui
 
 import (
-	"fmt"
-	"strconv"
-
 	"aalbu/bw-cli/internal/aws"
 	"aalbu/bw-cli/pkg"
+	"fmt"
+	"strconv"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
 
-// DisplayServices shows the services in a scrollable UI and allows updating the desired count
+// DisplayServices shows the services and their deployment status.
 func DisplayServices(app *tview.Application, services []pkg.ServiceDetails, env string) {
 	list := tview.NewList()
-
-	// Add services to the list
-	for _, service := range services {
-		list.AddItem(fmt.Sprintf("%s (Running: %d, Desired: %d)", service.ServiceName, service.RunningCount, service.DesiredCount), "", 0, func() {})
+	for i, service := range services {
+		index := i
+		list.AddItem(
+			fmt.Sprintf("%s (Running: %d, Desired: %d) - Status: %s",
+				service.ServiceName, service.RunningCount, service.DesiredCount, service.Status),
+			"", 0, func() {
+				showServiceOptions(app, services[index], env, services, list)
+			})
 	}
 
-	// Set the selected service action to update the desired count
-	list.SetSelectedFunc(func(index int, mainText, secondaryText string, shortcut rune) {
-		selectedService := services[index]
-		showDesiredCountPrompt(app, selectedService, env, services, list)
+	go startPollingDeploymentStatus(app, list, services, env)
+
+	list.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch event.Rune() {
+		case 'R': // Restart all services
+			showRestartAllServicesPrompt(app, services, env, list)
+		}
+		return event
 	})
 
 	app.SetRoot(list, true)
 }
 
-// showDesiredCountPrompt shows a prompt to input the new desired count for a service
+// startPollingDeploymentStatus polls for updates on service status.
+func startPollingDeploymentStatus(app *tview.Application, list *tview.List, services []pkg.ServiceDetails, env string) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		updatedServices, err := fetchUpdatedServices(env, services)
+		if err != nil {
+			fmt.Println("Error fetching updated services:", err)
+			continue
+		}
+
+		app.QueueUpdateDraw(func() {
+			list.Clear()
+			for i, service := range updatedServices {
+				index := i
+				list.AddItem(
+					fmt.Sprintf("%s (Running: %d, Desired: %d) - Status: %s",
+						service.ServiceName, service.RunningCount, service.DesiredCount, service.Status),
+					"", 0, func() {
+						showServiceOptions(app, updatedServices[index], env, updatedServices, list)
+					})
+			}
+		})
+	}
+}
+
+// fetchUpdatedServices fetches the updated deployment status for each service.
+func fetchUpdatedServices(env string, services []pkg.ServiceDetails) ([]pkg.ServiceDetails, error) {
+	for i, service := range services {
+		status, err := aws.GetServiceDeploymentStatus(env, service.ServiceName, service.Cluster)
+		if err != nil {
+			return nil, err
+		}
+		services[i].Status = status
+	}
+	return services, nil
+}
+
+// showServiceOptions shows available options for a specific service.
+func showServiceOptions(app *tview.Application, service pkg.ServiceDetails, env string, services []pkg.ServiceDetails, list *tview.List) {
+	modal := tview.NewModal().
+		SetText(fmt.Sprintf("Service: %s\nChoose an action:", service.ServiceName)).
+		AddButtons([]string{"Change Desired Count", "Restart Service", "Cancel"}).
+		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+			switch buttonLabel {
+			case "Change Desired Count":
+				showDesiredCountPrompt(app, service, env, services, list)
+			case "Restart Service":
+				restartService(app, service, env, list)
+			default:
+				app.SetRoot(list, true)
+			}
+		})
+
+	app.SetRoot(modal, false)
+}
+
+// restartService redeploys only the selected service
+func restartService(app *tview.Application, service pkg.ServiceDetails, env string, list *tview.List) {
+	err := aws.RestartService(env, service.ServiceName, service.Cluster)
+	if err != nil {
+		showMessage(app, fmt.Sprintf("Failed to restart service: %v", err), list)
+	} else {
+		showMessage(app, fmt.Sprintf("Service %s has been restarted.", service.ServiceName), list)
+	}
+}
+
+// showRestartAllServicesPrompt shows a confirmation prompt to restart all services.
+func showRestartAllServicesPrompt(app *tview.Application, services []pkg.ServiceDetails, env string, list *tview.List) {
+	modal := tview.NewModal().
+		SetText("Are you sure you want to restart all services?").
+		AddButtons([]string{"Yes", "No"}).
+		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+			if buttonLabel == "Yes" {
+				go restartAllServices(app, services, env, list)
+			}
+			app.SetRoot(list, true)
+		})
+
+	app.SetRoot(modal, false)
+}
+
+// restartAllServices triggers redeploys of all services in the background
+func restartAllServices(app *tview.Application, services []pkg.ServiceDetails, env string, list *tview.List) {
+	var failedServices []string
+
+	for _, service := range services {
+		err := aws.RestartService(env, service.ServiceName, service.Cluster)
+		if err != nil {
+			failedServices = append(failedServices, service.ServiceName)
+		}
+	}
+
+	app.QueueUpdateDraw(func() {
+		if len(failedServices) > 0 {
+			showMessage(app, fmt.Sprintf("Failed to restart services: %v", failedServices), list)
+		} else {
+			showMessage(app, "All services have been restarted successfully.", list)
+		}
+	})
+}
+
+// showDesiredCountPrompt shows a prompt to change the desired count for the selected service
 func showDesiredCountPrompt(app *tview.Application, service pkg.ServiceDetails, env string, services []pkg.ServiceDetails, list *tview.List) {
 	inputField := tview.NewInputField().
 		SetLabel(fmt.Sprintf("Change desired count for %s: ", service.ServiceName)).
@@ -37,16 +148,19 @@ func showDesiredCountPrompt(app *tview.Application, service pkg.ServiceDetails, 
 
 	inputField.SetDoneFunc(func(key tcell.Key) {
 		if key == tcell.KeyEnter {
-			newDesiredCount, err := convertInputToInt(inputField.GetText())
+			newDesiredCount, err := strconv.Atoi(inputField.GetText())
 			if err != nil {
 				showMessage(app, "Invalid input. Please enter a positive integer.", list)
 				return
 			}
 
-			err = updateServiceDesiredCount(app, service, env, newDesiredCount, list)
+			// Only update the desired count of the selected service
+			err = aws.UpdateServiceDesiredCount(env, service.ServiceName, service.Cluster, int64(newDesiredCount))
 			if err != nil {
 				showMessage(app, fmt.Sprintf("Failed to update service: %v", err), list)
 			} else {
+				service.DesiredCount = int64(newDesiredCount)
+				list.SetItemText(list.GetCurrentItem(), fmt.Sprintf("%s (Running: %d, Desired: %d)", service.ServiceName, service.RunningCount, service.DesiredCount), "")
 				showMessage(app, fmt.Sprintf("Updated %s to desired count %d", service.ServiceName, newDesiredCount), list)
 			}
 		}
@@ -55,29 +169,12 @@ func showDesiredCountPrompt(app *tview.Application, service pkg.ServiceDetails, 
 	app.SetRoot(inputField, true)
 }
 
-func convertInputToInt(input string) (int, error) {
-	return strconv.Atoi(input)
-}
-
-func updateServiceDesiredCount(app *tview.Application, service pkg.ServiceDetails, env string, newDesiredCount int, list *tview.List) error {
-	err := aws.UpdateServiceDesiredCount(env, service.ServiceName, service.Cluster, int64(newDesiredCount))
-	if err != nil {
-		return err
-	}
-
-	// Update the UI to reflect the new desired count
-	service.DesiredCount = int64(newDesiredCount)
-	list.SetItemText(list.GetCurrentItem(), fmt.Sprintf("%s (Running: %d, Desired: %d)", service.ServiceName, service.RunningCount, service.DesiredCount), "")
-	return nil
-}
-
-// showMessage shows a modal with a message and an OK button that returns to the previous screen
+// showMessage shows a modal with a message and an OK button that returns to the service list.
 func showMessage(app *tview.Application, message string, previousView tview.Primitive) {
 	modal := tview.NewModal().
 		SetText(message).
 		AddButtons([]string{"OK"}).
 		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-			// Return to the previous view when the user presses OK
 			app.SetRoot(previousView, true)
 		})
 
