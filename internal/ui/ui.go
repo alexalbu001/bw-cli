@@ -11,8 +11,9 @@ import (
 	"github.com/rivo/tview"
 )
 
-// DisplayServices shows the services and their deployment status.
+// DisplayServices shows the services and their deployment status, along with a legend.
 func DisplayServices(app *tview.Application, services []pkg.ServiceDetails) {
+	// Create the list of services
 	list := tview.NewList()
 	for i, service := range services {
 		index := i
@@ -24,17 +25,32 @@ func DisplayServices(app *tview.Application, services []pkg.ServiceDetails) {
 			})
 	}
 
-	go startPollingDeploymentStatus(app, list, services)
-
+	// Capture key inputs for actions
 	list.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Rune() {
 		case 'R': // Restart all services
 			showRestartAllServicesPrompt(app, services, list)
+		case 's': // Connect to a container
+			currentService := services[list.GetCurrentItem()]
+			showContainerExecPrompt(app, currentService)
 		}
 		return event
 	})
 
-	app.SetRoot(list, true)
+	// Create a legend text view
+	legend := tview.NewTextView().
+		SetText("[yellow]s[-] - Shell | [red]R[-] - Redeploy all containers").
+		SetDynamicColors(true).
+		SetTextAlign(tview.AlignCenter)
+
+	// Create a flex layout to hold the service list and the legend
+	flex := tview.NewFlex().
+		SetDirection(tview.FlexRow).
+		AddItem(list, 0, 1, true).   // The list will take most of the screen space
+		AddItem(legend, 1, 1, false) // The legend will be at the bottom of the screen
+
+	// Set the root layout and run the app
+	app.SetRoot(flex, true)
 }
 
 // startPollingDeploymentStatus polls for updates on service status.
@@ -179,4 +195,49 @@ func showMessage(app *tview.Application, message string, previousView tview.Prim
 		})
 
 	app.SetRoot(modal, false)
+}
+
+// showContainerExecPrompt prompts for the container and command, then connects to the container using ECS Exec.
+func showContainerExecPrompt(app *tview.Application, service pkg.ServiceDetails) {
+	// Fetch the task associated with the service
+	taskArn, err := aws.GetTaskArnForService(service.Cluster, service.ServiceName)
+	if err != nil {
+		showMessage(app, fmt.Sprintf("Failed to fetch task for service: %v", err), nil)
+		return
+	}
+
+	// Fetch container names for the task
+	containerNames, err := aws.GetTaskDetails(service.Cluster, taskArn)
+	if err != nil {
+		showMessage(app, fmt.Sprintf("Failed to fetch containers for task: %v", err), nil)
+		return
+	}
+
+	// Present container selection modal
+	showContainerSelection(app, service.Cluster, taskArn, containerNames)
+}
+
+// showContainerSelection presents a list of containers for the user to choose from.
+func showContainerSelection(app *tview.Application, cluster, taskArn string, containerNames []string) {
+	list := tview.NewList()
+	for _, containerName := range containerNames {
+		container := containerName // Capture the current containerName in the loop
+		list.AddItem(containerName, "", 0, func() {
+			// Connect to the selected container
+			command := "/bin/sh" // Default command to open a shell
+			err := aws.ExecCommandToContainer(cluster, taskArn, container, command)
+			if err != nil {
+				showMessage(app, fmt.Sprintf("Failed to connect to container: %v", err), nil)
+			} else {
+				showMessage(app, fmt.Sprintf("Connected to container %s successfully!", container), nil)
+			}
+		})
+	}
+
+	list.SetDoneFunc(func() {
+		// Return to the previous screen if needed
+		app.Stop()
+	})
+
+	app.SetRoot(list, true)
 }

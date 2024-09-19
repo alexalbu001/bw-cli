@@ -4,8 +4,10 @@ import (
 	"aalbu/bw-cli/pkg"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 )
 
 const maxDescribeServicesBatchSize = 10
@@ -188,4 +190,88 @@ func GetServiceDeploymentStatus(serviceName, cluster string) (string, error) {
 		return "Deployment Failed", nil
 	}
 	return deployment.Status, nil
+}
+
+// ExecCommandToContainer executes a command inside the ECS container using ECS Exec.
+func ExecCommandToContainer(cluster, task, container, command string) error {
+	// Prepare the command arguments for ECS Exec
+	args := []string{
+		"ecs", "execute-command",
+		"--cluster", cluster,
+		"--task", task,
+		"--container", container,
+		"--interactive",
+		"--command", command,
+	}
+
+	// Replace the current Go process with the AWS CLI command
+	err := syscall.Exec("/usr/local/bin/aws", append([]string{"aws"}, args...), os.Environ()) // Use the correct path to aws
+	if err != nil {
+		return fmt.Errorf("failed to execute command in container: %v", err)
+	}
+
+	return nil
+}
+
+// GetTaskDetails fetches details for a running task, including the container names.
+func GetTaskDetails(cluster, taskArn string) ([]string, error) {
+	cmd := exec.Command("aws", "ecs", "describe-tasks",
+		"--cluster", cluster,
+		"--tasks", taskArn)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("error describing task %s: %v", taskArn, err)
+	}
+
+	var taskResponse struct {
+		Tasks []struct {
+			Containers []struct {
+				Name string `json:"name"`
+			} `json:"containers"`
+		} `json:"tasks"`
+	}
+
+	if err := json.Unmarshal(output, &taskResponse); err != nil {
+		return nil, fmt.Errorf("error parsing task details: %v", err)
+	}
+
+	if len(taskResponse.Tasks) == 0 {
+		return nil, fmt.Errorf("no task details found for task %s", taskArn)
+	}
+
+	// Extract container names
+	var containerNames []string
+	for _, container := range taskResponse.Tasks[0].Containers {
+		containerNames = append(containerNames, container.Name)
+	}
+
+	return containerNames, nil
+}
+
+// GetTaskArnForService fetches the ARN of the running task for the specified service.
+func GetTaskArnForService(cluster, serviceName string) (string, error) {
+	cmd := exec.Command("aws", "ecs", "list-tasks",
+		"--cluster", cluster,
+		"--service-name", serviceName)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("error listing tasks for service %s: %v", serviceName, err)
+	}
+
+	var taskResponse struct {
+		TaskArns []string `json:"taskArns"`
+	}
+
+	if err := json.Unmarshal(output, &taskResponse); err != nil {
+		return "", fmt.Errorf("error parsing task list: %v", err)
+	}
+
+	if len(taskResponse.TaskArns) == 0 {
+		return "", fmt.Errorf("no running tasks found for service %s", serviceName)
+	}
+
+	// Returning the first task ARN (assuming only one task is running)
+	return taskResponse.TaskArns[0], nil
 }
