@@ -11,8 +11,8 @@ import (
 const maxDescribeServicesBatchSize = 10
 
 // GetAllServiceDetails fetches services with running and desired count details from all clusters in parallel.
-func GetAllServiceDetails(env string) ([]pkg.ServiceDetails, error) {
-	clusters, err := listClusters(env)
+func GetAllServiceDetails() ([]pkg.ServiceDetails, error) {
+	clusters, err := listClusters()
 	if err != nil {
 		return nil, err
 	}
@@ -24,7 +24,7 @@ func GetAllServiceDetails(env string) ([]pkg.ServiceDetails, error) {
 		wg.Add(1)
 		go func(cluster string) {
 			defer wg.Done()
-			services, err := describeServicesInBatches(env, cluster)
+			services, err := describeServicesInBatches(cluster)
 			if err != nil {
 				return
 			}
@@ -44,8 +44,8 @@ func GetAllServiceDetails(env string) ([]pkg.ServiceDetails, error) {
 }
 
 // listClusters fetches all ECS clusters.
-func listClusters(env string) ([]string, error) {
-	cmd := exec.Command("aws-vault", "exec", env, "--", "aws", "ecs", "list-clusters")
+func listClusters() ([]string, error) {
+	cmd := exec.Command("aws", "ecs", "list-clusters")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("error listing clusters: %v", err)
@@ -60,8 +60,8 @@ func listClusters(env string) ([]string, error) {
 }
 
 // describeServicesInBatches describes services for a given cluster in batches.
-func describeServicesInBatches(env string, cluster string) ([]pkg.ServiceDetails, error) {
-	serviceArns, err := listServices(env, cluster)
+func describeServicesInBatches(cluster string) ([]pkg.ServiceDetails, error) {
+	serviceArns, err := listServices(cluster)
 	if err != nil || len(serviceArns) == 0 {
 		return nil, err
 	}
@@ -74,7 +74,7 @@ func describeServicesInBatches(env string, cluster string) ([]pkg.ServiceDetails
 		}
 
 		batch := serviceArns[i:end]
-		cmd := exec.Command("aws-vault", append([]string{"exec", env, "--", "aws", "ecs", "describe-services", "--cluster", cluster, "--services"}, batch...)...)
+		cmd := exec.Command("aws", append([]string{"ecs", "describe-services", "--cluster", cluster, "--services"}, batch...)...)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			fmt.Printf("Error describing services in cluster %s: %v\n", cluster, err)
@@ -100,8 +100,8 @@ func describeServicesInBatches(env string, cluster string) ([]pkg.ServiceDetails
 }
 
 // listServices fetches the ARNs of all services for a given ECS cluster.
-func listServices(env, cluster string) ([]string, error) {
-	cmd := exec.Command("aws-vault", "exec", env, "--", "aws", "ecs", "list-services", "--cluster", cluster)
+func listServices(cluster string) ([]string, error) {
+	cmd := exec.Command("aws", "ecs", "list-services", "--cluster", cluster)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		fmt.Printf("Error listing services in cluster %s: %v\n", cluster, err)
@@ -117,8 +117,8 @@ func listServices(env, cluster string) ([]string, error) {
 }
 
 // UpdateServiceDesiredCount updates the desired count for a given ECS service.
-func UpdateServiceDesiredCount(env, serviceName, cluster string, desiredCount int64) error {
-	cmd := exec.Command("aws-vault", "exec", env, "--", "aws", "ecs", "update-service",
+func UpdateServiceDesiredCount(serviceName, cluster string, desiredCount int64) error {
+	cmd := exec.Command("aws", "ecs", "update-service",
 		"--cluster", cluster,
 		"--service", serviceName,
 		"--desired-count", fmt.Sprintf("%d", desiredCount))
@@ -131,8 +131,8 @@ func UpdateServiceDesiredCount(env, serviceName, cluster string, desiredCount in
 }
 
 // RestartService forces a redeploy of the ECS service by calling the update-service command.
-func RestartService(env, serviceName, cluster string) error {
-	cmd := exec.Command("aws-vault", "exec", env, "--", "aws", "ecs", "update-service",
+func RestartService(serviceName, cluster string) error {
+	cmd := exec.Command("aws", "ecs", "update-service",
 		"--cluster", cluster,
 		"--service", serviceName,
 		"--force-new-deployment")
@@ -146,8 +146,8 @@ func RestartService(env, serviceName, cluster string) error {
 }
 
 // GetServiceDeploymentStatus fetches the deployment status of a specific ECS service.
-func GetServiceDeploymentStatus(env, serviceName, cluster string) (string, error) {
-	cmd := exec.Command("aws-vault", "exec", env, "--", "aws", "ecs", "describe-services",
+func GetServiceDeploymentStatus(serviceName, cluster string) (string, error) {
+	cmd := exec.Command("aws", "ecs", "describe-services",
 		"--cluster", cluster,
 		"--services", serviceName)
 

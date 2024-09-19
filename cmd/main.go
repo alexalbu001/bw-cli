@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"log"
 
 	"aalbu/bw-cli/internal/aws"
@@ -11,12 +10,9 @@ import (
 )
 
 func main() {
-	// Define a flag to capture the environment (e.g., bwstage)
-	env := flag.String("env", "bwstaging", "AWS Vault environment (e.g. bwstaging, bwprod)")
-	flag.Parse()
 
 	// Fetch all service details (running and desired container counts)
-	services, err := aws.GetAllServiceDetails(*env)
+	services, err := aws.GetAllServiceDetails()
 	if err != nil {
 		log.Fatalf("Error fetching services: %v", err)
 	}
@@ -25,7 +21,7 @@ func main() {
 	app := tview.NewApplication()
 
 	// Display the fetched services in the terminal UI, passing the app and env variable
-	ui.DisplayServices(app, services, *env)
+	ui.DisplayServices(app, services)
 
 	// Run the application
 	if err := app.Run(); err != nil {
