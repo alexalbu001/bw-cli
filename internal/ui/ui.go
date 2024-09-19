@@ -5,6 +5,7 @@ import (
 	"aalbu/bw-cli/pkg"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -138,18 +139,30 @@ func showRestartAllServicesPrompt(app *tview.Application, services []pkg.Service
 
 // restartAllServices triggers redeploys of all services in the background
 func restartAllServices(app *tview.Application, services []pkg.ServiceDetails, list *tview.List) {
-	var failedServices []string
+	var wg sync.WaitGroup
+	failedServices := make(chan string, len(services))
 
 	for _, service := range services {
-		err := aws.RestartService(service.ServiceName, service.Cluster)
-		if err != nil {
-			failedServices = append(failedServices, service.ServiceName)
-		}
+		wg.Add(1)
+		go func(s pkg.ServiceDetails) {
+			defer wg.Done()
+			if err := aws.RestartService(s.ServiceName, s.Cluster); err != nil {
+				failedServices <- s.ServiceName
+			}
+		}(service)
+	}
+
+	wg.Wait()
+	close(failedServices)
+
+	failed := make([]string, 0, len(services))
+	for s := range failedServices {
+		failed = append(failed, s)
 	}
 
 	app.QueueUpdateDraw(func() {
-		if len(failedServices) > 0 {
-			showMessage(app, fmt.Sprintf("Failed to restart services: %v", failedServices), list)
+		if len(failed) > 0 {
+			showMessage(app, fmt.Sprintf("Failed to restart services: %v", failed), list)
 		} else {
 			showMessage(app, "All services have been restarted successfully.", list)
 		}
