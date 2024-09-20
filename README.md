@@ -1,28 +1,64 @@
-# bw-cli - ECS Service Scaling Tool
+# bw-cli
 
+`bw-cli` is a lightweight command-line interface for managing ECS services, inspired by K9s but designed specifically for AWS ECS environments. It allows you to interact with your ECS services, check service details, update service counts, restart services, and even shell into running containers using ECS Exec.
 
-bw-cli -env [AWS-VAULT Profile] (aws-vault ls)
-bw-cli -env bwperf
-![alt text](docs/main-screen.png)
+## Usage
 
-Press 'R' (Capital) to restart all services (Force deployments)
-![alt text](docs/force-deployment.png)
+Once installed, you can run `bw-cli` to interact with your ECS services directly from your terminal. Below are some key features and commands:
 
-Enter a service to either 'Change Desired Count', 'Restart Service'.
-![alt text](docs/image.png)
+- **Shell into a container**: Press `s` to open a shell into a running container using ECS Exec.
+- **Restart all containers**: Press `R` to redeploy all ECS containers in a selected service.
+- **Update desired container count**: Select a service and change the desired number of tasks.
+- **View services**: Get an overview of running services with details on desired and running task counts.
 
-## bw-cli is a simple CLI tool that allows users to view and modify the desired count of ECS services running in different clusters. The tool leverages the AWS CLI and aws-vault to manage credentials securely, and it provides an interactive, terminal-based user interface built with tview.
+## Installation
 
-### Installation - Using Homebrew
-brew tap alexalbu001/bw-cli
+You can install `bw-cli` using [Homebrew](https://brew.sh/). Follow these steps:
+
+```
+brew tap alexalbu001/homebrew-bw-cli
 brew install bw-cli
+```
 
 
-## Prerequisites
-To run bw-cli, you will need the following installed on your machine:
+### AWS Permissions
 
-Go: Install Go (version 1.18 or above).
-AWS CLI: Install AWS CLI.
-aws-vault: Install aws-vault for managing AWS credentials.
+To use `bw-cli`, you must have the appropriate AWS permissions configured, including:
+- ECS permissions to list clusters, services, and tasks.
+- STS permissions to retrieve account information (`sts:GetCallerIdentity`).
+- Permissions to execute commands in containers using ECS Exec (`ecs:ExecuteCommand`).
 
-### Testing - WIP
+Ensure your AWS credentials are properly configured in your environment and the permissions are set in the IAM role or user you're using.
+
+
+### ECS Task Definitions
+
+In order to use the **ECS Exec** feature (`s` to shell into a container), the ECS task definitions must have the `enableExecuteCommand` flag enabled. To do this, you need to ensure the following in your task definition:
+
+```json
+"containerDefinitions": [
+  {
+    "name": "your-container",
+    "image": "your-image",
+    ...
+    "command": [...],
+    "essential": true,
+    "enableExecuteCommand": true
+  }
+]
+```
+
+## Development
+
+For local development or contributing:
+
+1. Clone the repository:
+   `git clone https://github.com/alexalbu001/bw-cli.git`
+2. Install dependencies:
+   `go mod tidy`
+3. Build the project:
+   `go build -o bw-cli`
+
+## License
+
+This project is licensed under the MIT License.
