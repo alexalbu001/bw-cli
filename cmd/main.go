@@ -11,6 +11,11 @@ import (
 
 func main() {
 
+	err := aws.GetCallerIdentity()
+	if err != nil {
+		log.Fatalf("Error fetching AWS identity: %v", err)
+	}
+
 	// Fetch all service details (running and desired container counts)
 	services, err := aws.GetAllServiceDetails()
 	if err != nil {

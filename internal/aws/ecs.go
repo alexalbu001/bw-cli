@@ -2,12 +2,16 @@ package aws
 
 import (
 	"aalbu/bw-cli/pkg"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"sync"
 	"syscall"
+
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
 const maxDescribeServicesBatchSize = 10
@@ -274,4 +278,28 @@ func GetTaskArnForService(cluster, serviceName string) (string, error) {
 
 	// Returning the first task ARN (assuming only one task is running)
 	return taskResponse.TaskArns[0], nil
+}
+
+func GetCallerIdentity() error {
+	// Load the default AWS configuration
+	cfg, err := config.LoadDefaultConfig(context.TODO())
+	if err != nil {
+		return fmt.Errorf("unable to load SDK config: %v", err)
+	}
+
+	// Create an STS client
+	stsClient := sts.NewFromConfig(cfg)
+
+	// Call the GetCallerIdentity API
+	identityOutput, err := stsClient.GetCallerIdentity(context.TODO(), &sts.GetCallerIdentityInput{})
+	if err != nil {
+		return fmt.Errorf("failed to get caller identity: %v", err)
+	}
+
+	// Display the account ID and ARN
+	fmt.Printf("AWS Account ID: %s\n", *identityOutput.Account)
+	fmt.Printf("ARN: %s\n", *identityOutput.Arn)
+	fmt.Printf("User ID: %s\n", *identityOutput.UserId)
+
+	return nil
 }
