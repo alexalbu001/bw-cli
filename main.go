@@ -3,8 +3,8 @@ package main
 import (
 	"log"
 
-	"aalbu/bw-cli/internal/aws"
-	"aalbu/bw-cli/internal/ui"
+	"github.com/alexalbu001/bw-cli/internal/aws"
+	"github.com/alexalbu001/bw-cli/internal/ui"
 
 	"github.com/rivo/tview"
 )

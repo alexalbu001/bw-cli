@@ -1,12 +1,14 @@
 package ui
 
 import (
-	"aalbu/bw-cli/internal/aws"
-	"aalbu/bw-cli/pkg"
 	"fmt"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/alexalbu001/bw-cli/pkg"
+
+	"github.com/alexalbu001/bw-cli/internal/aws"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
