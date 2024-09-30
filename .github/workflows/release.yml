@@ -23,6 +23,9 @@ jobs:
       - name: Set version
         run: echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_ENV
 
+      - name: Run tests
+        run: go test -v ./...
+
       - name: Build binaries
         run: |
           GOOS=darwin GOARCH=arm64 go build -o bw-cli-darwin-arm64 -ldflags "-X main.version=${VERSION}"
