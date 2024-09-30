@@ -1,0 +1,104 @@
+name: Manual Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., v0.5.1)'
+        required: true
+
+jobs:
+  build:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: 1.17
+
+      - name: Set version
+        run: echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_ENV
+
+      - name: Build binaries
+        run: |
+          GOOS=darwin GOARCH=arm64 go build -o bw-cli-darwin-arm64 -ldflags "-X main.version=${VERSION}"
+          GOOS=linux GOARCH=amd64 go build -o bw-cli-linux-amd64 -ldflags "-X main.version=${VERSION}"
+
+      - name: Create tarballs
+        run: |
+          tar -czf bw-cli-darwin-arm64.tar.gz bw-cli-darwin-arm64
+          tar -czf bw-cli-linux-amd64.tar.gz bw-cli-linux-amd64
+
+      - name: Generate SHA256 checksums
+        run: |
+          sha256sum bw-cli-darwin-arm64.tar.gz > bw-cli-darwin-arm64.tar.gz.sha256
+          sha256sum bw-cli-linux-amd64.tar.gz > bw-cli-linux-amd64.tar.gz.sha256
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ env.VERSION }}
+          release_name: Release ${{ env.VERSION }}
+          draft: false
+          prerelease: false
+
+      - name: Upload Darwin ARM64 Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./bw-cli-darwin-arm64.tar.gz
+          asset_name: bw-cli-darwin-arm64.tar.gz
+          asset_content_type: application/gzip
+
+      - name: Upload Linux AMD64 Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./bw-cli-linux-amd64.tar.gz
+          asset_name: bw-cli-linux-amd64.tar.gz
+          asset_content_type: application/gzip
+
+      - name: Update Homebrew formula
+        env:
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          DARWIN_SHA256=$(cat bw-cli-darwin-arm64.tar.gz.sha256 | cut -d ' ' -f 1)
+          
+          cat > bw-cli.rb <<EOL
+          class BwCli < Formula
+            desc "CLI tool to manage ECS services and modify desired counts"
+            homepage "https://github.com/alexalbu001/bw-cli"
+            url "https://github.com/alexalbu001/bw-cli/releases/download/${VERSION}/bw-cli-darwin-arm64.tar.gz"
+            sha256 "${DARWIN_SHA256}"
+            license "MIT"
+            version "${VERSION}"
+          
+            def install
+              bin.install "bw-cli-darwin-arm64" => "bw-cli"
+            end
+          
+            test do
+              assert_match "Usage", shell_output("#{bin}/bw-cli --help")
+            end
+          end
+          EOL
+          
+          git config --global user.email "github-actions@github.com"
+          git config --global user.name "GitHub Actions"
+          git clone https://x-access-token:${HOMEBREW_TAP_GITHUB_TOKEN}@github.com/alexalbu001/homebrew-bw-cli.git
+          cp bw-cli.rb homebrew-bw-cli/Formula/
+          cd homebrew-bw-cli
+          git add Formula/bw-cli.rb
+          git commit -m "Update bw-cli to ${VERSION}"
+          git push
