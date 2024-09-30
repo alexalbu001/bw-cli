@@ -97,8 +97,7 @@ jobs:
           git config --global user.email "github-actions@github.com"
           git config --global user.name "GitHub Actions"
           git clone https://x-access-token:${HOMEBREW_TAP_GITHUB_TOKEN}@github.com/alexalbu001/homebrew-bw-cli.git
-          cp bw-cli.rb homebrew-bw-cli/Formula/
-          cd homebrew-bw-cli
-          git add Formula/bw-cli.rb
-          git commit -m "Update bw-cli to ${VERSION}"
+          cp bw-cli.rb homebrew-bw-cli/
+          git add bw-cli.rb
+          git commit -m "Update bw-cli to ${VERSION} - $(date +'%Y-%m-%d')"
           git push
