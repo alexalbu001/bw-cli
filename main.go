@@ -8,6 +8,10 @@ import (
 	"github.com/alexalbu001/bw-cli/internal/aws"
 	"github.com/alexalbu001/bw-cli/internal/ui"
 
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/rivo/tview"
 	"github.com/spf13/cobra"
 )
@@ -47,18 +51,27 @@ func init() {
 }
 
 func runCLI() {
-	err := aws.GetCallerIdentity()
+	// Load AWS configuration
+	cfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
-		log.Fatalf("Error fetching AWS identity: %v", err)
+		log.Fatalf("unable to load SDK config, %v", err)
 	}
 
-	services, err := aws.GetAllServiceDetails()
+	// Create an ECS client
+	ecsClient := ecs.NewFromConfig(cfg)
+
+	// Create context
+	ctx := context.TODO()
+
+	// Fetch service details
+	services, err := aws.GetAllServiceDetails(ctx, ecsClient)
 	if err != nil {
 		log.Fatalf("Error fetching services: %v", err)
 	}
 
+	// Initialize the UI and pass the context and ecsClient
 	app := tview.NewApplication()
-	ui.DisplayServices(app, services)
+	ui.DisplayServices(app, ctx, ecsClient, services)
 
 	if err := app.Run(); err != nil {
 		log.Fatalf("Error running application: %v", err)
