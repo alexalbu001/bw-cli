@@ -15,9 +15,19 @@ import (
 
 const maxDescribeServicesBatchSize = 10
 
+// ECSClientAPI defines the interface for ECS client operations
+type ECSClientAPI interface {
+	ListClusters(ctx context.Context, params *ecs.ListClustersInput, optFns ...func(*ecs.Options)) (*ecs.ListClustersOutput, error)
+	ListServices(ctx context.Context, params *ecs.ListServicesInput, optFns ...func(*ecs.Options)) (*ecs.ListServicesOutput, error)
+	DescribeServices(ctx context.Context, params *ecs.DescribeServicesInput, optFns ...func(*ecs.Options)) (*ecs.DescribeServicesOutput, error)
+	UpdateService(ctx context.Context, params *ecs.UpdateServiceInput, optFns ...func(*ecs.Options)) (*ecs.UpdateServiceOutput, error)
+	DescribeTasks(ctx context.Context, params *ecs.DescribeTasksInput, optFns ...func(*ecs.Options)) (*ecs.DescribeTasksOutput, error)
+	ListTasks(ctx context.Context, params *ecs.ListTasksInput, optFns ...func(*ecs.Options)) (*ecs.ListTasksOutput, error)
+}
+
 // GetAllServiceDetails fetches services with running and desired count details from all clusters in parallel.
-func GetAllServiceDetails(ctx context.Context, ecsClient *ecs.Client) ([]pkg.ServiceDetails, error) {
-	clusters, err := listClusters(ctx, ecsClient) // Dynamically fetch clusters
+func GetAllServiceDetails(ctx context.Context, ecsClient ECSClientAPI) ([]pkg.ServiceDetails, error) {
+	clusters, err := listClusters(ctx, ecsClient)
 	if err != nil {
 		return nil, err
 	}
@@ -29,7 +39,7 @@ func GetAllServiceDetails(ctx context.Context, ecsClient *ecs.Client) ([]pkg.Ser
 		wg.Add(1)
 		go func(cluster string) {
 			defer wg.Done()
-			services, err := describeServicesInBatches(cluster, ctx, ecsClient) // Fetch services dynamically for each cluster
+			services, err := describeServicesInBatches(cluster, ctx, ecsClient)
 			if err != nil {
 				return
 			}
@@ -48,7 +58,7 @@ func GetAllServiceDetails(ctx context.Context, ecsClient *ecs.Client) ([]pkg.Ser
 	return allServices, nil
 }
 
-func GetServiceDetails(ctx context.Context, ecsClient *ecs.Client, serviceName, cluster string) (pkg.ServiceDetails, error) {
+func GetServiceDetails(ctx context.Context, ecsClient ECSClientAPI, serviceName, cluster string) (pkg.ServiceDetails, error) {
 	input := &ecs.DescribeServicesInput{
 		Cluster:  &cluster,
 		Services: []string{serviceName},
@@ -73,7 +83,7 @@ func GetServiceDetails(ctx context.Context, ecsClient *ecs.Client, serviceName, 
 	}, nil
 }
 
-func listClusters(ctx context.Context, ecsClient *ecs.Client) ([]string, error) {
+func listClusters(ctx context.Context, ecsClient ECSClientAPI) ([]string, error) {
 	input := &ecs.ListClustersInput{}
 	var clusterArns []string
 
@@ -88,9 +98,9 @@ func listClusters(ctx context.Context, ecsClient *ecs.Client) ([]string, error) 
 	return clusterArns, nil
 }
 
-func listServices(ctx context.Context, ecsClient *ecs.Client, cluster string) ([]string, error) {
+func listServices(ctx context.Context, ecsClient ECSClientAPI, cluster string) ([]string, error) {
 	input := &ecs.ListServicesInput{
-		Cluster: &cluster, // Dynamically pass the cluster ARN
+		Cluster: &cluster,
 	}
 	var serviceArns []string
 
@@ -107,8 +117,8 @@ func listServices(ctx context.Context, ecsClient *ecs.Client, cluster string) ([
 }
 
 // describeServicesInBatches describes services for a given cluster in batches.
-func describeServicesInBatches(cluster string, ctx context.Context, ecsClient *ecs.Client) ([]pkg.ServiceDetails, error) {
-	serviceArns, err := listServices(ctx, ecsClient, cluster) // Fetch services dynamically
+func describeServicesInBatches(cluster string, ctx context.Context, ecsClient ECSClientAPI) ([]pkg.ServiceDetails, error) {
+	serviceArns, err := listServices(ctx, ecsClient, cluster)
 	if err != nil || len(serviceArns) == 0 {
 		return nil, err
 	}
@@ -147,7 +157,7 @@ func describeServicesInBatches(cluster string, ctx context.Context, ecsClient *e
 }
 
 // UpdateServiceDesiredCount updates the desired count for a given ECS service.
-func UpdateServiceDesiredCount(ctx context.Context, ecsClient *ecs.Client, serviceName, cluster string, desiredCount int64) error {
+func UpdateServiceDesiredCount(ctx context.Context, ecsClient ECSClientAPI, serviceName, cluster string, desiredCount int64) error {
 	input := &ecs.UpdateServiceInput{
 		Cluster:      &cluster,
 		Service:      &serviceName,
@@ -162,7 +172,7 @@ func UpdateServiceDesiredCount(ctx context.Context, ecsClient *ecs.Client, servi
 }
 
 // RestartService forces a redeploy of the ECS service by calling the update-service command.
-func RestartService(ctx context.Context, ecsClient *ecs.Client, serviceName, cluster string) error {
+func RestartService(ctx context.Context, ecsClient ECSClientAPI, serviceName, cluster string) error {
 	input := &ecs.UpdateServiceInput{
 		Cluster:            &cluster,
 		Service:            &serviceName,
@@ -178,7 +188,7 @@ func RestartService(ctx context.Context, ecsClient *ecs.Client, serviceName, clu
 }
 
 // GetServiceDeploymentStatus fetches the deployment status of a specific ECS service.
-func GetServiceDeploymentStatus(ctx context.Context, ecsClient *ecs.Client, serviceName, cluster string) (string, error) {
+func GetServiceDeploymentStatus(ctx context.Context, ecsClient ECSClientAPI, serviceName, cluster string) (string, error) {
 	input := &ecs.DescribeServicesInput{
 		Cluster:  &cluster,
 		Services: []string{serviceName},
@@ -209,11 +219,9 @@ func GetServiceDeploymentStatus(ctx context.Context, ecsClient *ecs.Client, serv
 
 // ExecCommandToContainer executes a command inside the ECS container using ECS Exec.
 func ExecCommandToContainer(cluster, task, container, command string) error {
-	// Clear the screen
 	fmt.Print("\033[2J") // Clear the screen
 	fmt.Print("\033[H")  // Move cursor to top-left corner
 
-	// Prepare the command arguments for ECS Exec
 	args := []string{
 		"aws",
 		"ecs", "execute-command",
@@ -224,7 +232,6 @@ func ExecCommandToContainer(cluster, task, container, command string) error {
 		"--command", command,
 	}
 
-	// Execute the AWS CLI command, replacing the current process
 	err := syscall.Exec("/usr/local/bin/aws", args, os.Environ())
 	if err != nil {
 		return fmt.Errorf("failed to execute command in container: %v", err)
@@ -234,7 +241,7 @@ func ExecCommandToContainer(cluster, task, container, command string) error {
 }
 
 // GetTaskDetails fetches details for a running task, including the container names.
-func GetTaskDetails(ctx context.Context, ecsClient *ecs.Client, cluster, taskArn string) ([]string, error) {
+func GetTaskDetails(ctx context.Context, ecsClient ECSClientAPI, cluster, taskArn string) ([]string, error) {
 	input := &ecs.DescribeTasksInput{
 		Cluster: &cluster,
 		Tasks:   []string{taskArn},
@@ -258,7 +265,7 @@ func GetTaskDetails(ctx context.Context, ecsClient *ecs.Client, cluster, taskArn
 }
 
 // GetTaskArnForService fetches the ARN of the running task for the specified service.
-func GetTaskArnForService(ctx context.Context, ecsClient *ecs.Client, cluster, serviceName string) (string, error) {
+func GetTaskArnForService(ctx context.Context, ecsClient ECSClientAPI, cluster, serviceName string) (string, error) {
 	input := &ecs.ListTasksInput{
 		Cluster:     &cluster,
 		ServiceName: &serviceName,
@@ -273,12 +280,11 @@ func GetTaskArnForService(ctx context.Context, ecsClient *ecs.Client, cluster, s
 		return "", fmt.Errorf("no running tasks found for service %s", serviceName)
 	}
 
-	// Return the first task ARN
 	return output.TaskArns[0], nil
 }
 
 // PollServiceUpdates continuously polls for updates to the given services and sends updates through a channel.
-func PollServiceUpdates(ctx context.Context, ecsClient *ecs.Client, services []pkg.ServiceDetails, updateInterval time.Duration) chan []pkg.ServiceDetails {
+func PollServiceUpdates(ctx context.Context, ecsClient ECSClientAPI, services []pkg.ServiceDetails, updateInterval time.Duration) chan []pkg.ServiceDetails {
 	updates := make(chan []pkg.ServiceDetails)
 
 	go func() {
