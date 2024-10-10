@@ -25,7 +25,9 @@ type ECSClientAPI interface {
 	ListTasks(ctx context.Context, params *ecs.ListTasksInput, optFns ...func(*ecs.Options)) (*ecs.ListTasksOutput, error)
 }
 
-// GetAllServiceDetails fetches services with running and desired count details from all clusters in parallel.
+// Service Listing and Description
+// -------------------------------
+
 func GetAllServiceDetails(ctx context.Context, ecsClient ECSClientAPI) ([]pkg.ServiceDetails, error) {
 	clusters, err := listClusters(ctx, ecsClient)
 	if err != nil {
@@ -83,6 +85,9 @@ func GetServiceDetails(ctx context.Context, ecsClient ECSClientAPI, serviceName,
 	}, nil
 }
 
+// Helper functions for listing and describing
+// -------------------------------------------
+
 func listClusters(ctx context.Context, ecsClient ECSClientAPI) ([]string, error) {
 	input := &ecs.ListClustersInput{}
 	var clusterArns []string
@@ -116,7 +121,6 @@ func listServices(ctx context.Context, ecsClient ECSClientAPI, cluster string) (
 	return serviceArns, nil
 }
 
-// describeServicesInBatches describes services for a given cluster in batches.
 func describeServicesInBatches(cluster string, ctx context.Context, ecsClient ECSClientAPI) ([]pkg.ServiceDetails, error) {
 	serviceArns, err := listServices(ctx, ecsClient, cluster)
 	if err != nil || len(serviceArns) == 0 {
@@ -156,7 +160,9 @@ func describeServicesInBatches(cluster string, ctx context.Context, ecsClient EC
 	return services, nil
 }
 
-// UpdateServiceDesiredCount updates the desired count for a given ECS service.
+// Service Management Operations
+// -----------------------------
+
 func UpdateServiceDesiredCount(ctx context.Context, ecsClient ECSClientAPI, serviceName, cluster string, desiredCount int64) error {
 	input := &ecs.UpdateServiceInput{
 		Cluster:      &cluster,
@@ -171,7 +177,6 @@ func UpdateServiceDesiredCount(ctx context.Context, ecsClient ECSClientAPI, serv
 	return nil
 }
 
-// RestartService forces a redeploy of the ECS service by calling the update-service command.
 func RestartService(ctx context.Context, ecsClient ECSClientAPI, serviceName, cluster string) error {
 	input := &ecs.UpdateServiceInput{
 		Cluster:            &cluster,
@@ -187,7 +192,9 @@ func RestartService(ctx context.Context, ecsClient ECSClientAPI, serviceName, cl
 	return nil
 }
 
-// GetServiceDeploymentStatus fetches the deployment status of a specific ECS service.
+// Deployment Status
+// -----------------
+
 func GetServiceDeploymentStatus(ctx context.Context, ecsClient ECSClientAPI, serviceName, cluster string) (string, error) {
 	input := &ecs.DescribeServicesInput{
 		Cluster:  &cluster,
@@ -217,7 +224,9 @@ func GetServiceDeploymentStatus(ctx context.Context, ecsClient ECSClientAPI, ser
 	return *deployment.Status, nil
 }
 
-// ExecCommandToContainer executes a command inside the ECS container using ECS Exec.
+// Container Operations
+// --------------------
+
 func ExecCommandToContainer(cluster, task, container, command string) error {
 	fmt.Print("\033[2J") // Clear the screen
 	fmt.Print("\033[H")  // Move cursor to top-left corner
@@ -240,7 +249,6 @@ func ExecCommandToContainer(cluster, task, container, command string) error {
 	return nil
 }
 
-// GetTaskDetails fetches details for a running task, including the container names.
 func GetTaskDetails(ctx context.Context, ecsClient ECSClientAPI, cluster, taskArn string) ([]string, error) {
 	input := &ecs.DescribeTasksInput{
 		Cluster: &cluster,
@@ -264,7 +272,6 @@ func GetTaskDetails(ctx context.Context, ecsClient ECSClientAPI, cluster, taskAr
 	return containerNames, nil
 }
 
-// GetTaskArnForService fetches the ARN of the running task for the specified service.
 func GetTaskArnForService(ctx context.Context, ecsClient ECSClientAPI, cluster, serviceName string) (string, error) {
 	input := &ecs.ListTasksInput{
 		Cluster:     &cluster,
@@ -283,7 +290,9 @@ func GetTaskArnForService(ctx context.Context, ecsClient ECSClientAPI, cluster, 
 	return output.TaskArns[0], nil
 }
 
-// PollServiceUpdates continuously polls for updates to the given services and sends updates through a channel.
+// Service Updates Polling
+// -----------------------
+
 func PollServiceUpdates(ctx context.Context, ecsClient ECSClientAPI, services []pkg.ServiceDetails, updateInterval time.Duration) chan []pkg.ServiceDetails {
 	updates := make(chan []pkg.ServiceDetails)
 
