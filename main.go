@@ -1,6 +1,9 @@
+// File: main.go
+
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -8,9 +11,8 @@ import (
 	"github.com/alexalbu001/bw-cli/internal/aws"
 	"github.com/alexalbu001/bw-cli/internal/ui"
 
-	"context"
-
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/rivo/tview"
 	"github.com/spf13/cobra"
@@ -60,18 +62,21 @@ func runCLI() {
 	// Create an ECS client
 	ecsClient := ecs.NewFromConfig(cfg)
 
+	// Create a CloudWatch client
+	cwClient := cloudwatch.NewFromConfig(cfg)
+
 	// Create context
 	ctx := context.TODO()
 
 	// Fetch service details
-	services, err := aws.GetAllServiceDetails(ctx, ecsClient)
+	services, err := aws.GetAllServiceDetails(ctx, ecsClient, cwClient)
 	if err != nil {
 		log.Fatalf("Error fetching services: %v", err)
 	}
 
-	// Initialize the UI and pass the context and ecsClient
+	// Initialize the UI and pass the context, ecsClient, and cwClient
 	app := tview.NewApplication()
-	ui.DisplayServices(app, ctx, ecsClient, services)
+	ui.DisplayServices(app, ctx, ecsClient, cwClient, services)
 
 	if err := app.Run(); err != nil {
 		log.Fatalf("Error running application: %v", err)

@@ -1,15 +1,16 @@
+// File: internal/ui/ui.go
+
 package ui
 
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/alexalbu001/bw-cli/internal/aws"
 	"github.com/alexalbu001/bw-cli/pkg"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -19,6 +20,7 @@ type ServiceUI struct {
 	app              *tview.Application
 	ctx              context.Context
 	ecsClient        *ecs.Client
+	cwClient         *cloudwatch.Client
 	list             *tview.List
 	searchInput      *tview.InputField
 	currentServices  []pkg.ServiceDetails
@@ -28,11 +30,12 @@ type ServiceUI struct {
 	logo             *tview.TextView
 }
 
-func NewServiceUI(app *tview.Application, ctx context.Context, ecsClient *ecs.Client, initialServices []pkg.ServiceDetails) *ServiceUI {
+func NewServiceUI(app *tview.Application, ctx context.Context, ecsClient *ecs.Client, cwClient *cloudwatch.Client, initialServices []pkg.ServiceDetails) *ServiceUI {
 	s := &ServiceUI{
 		app:              app,
 		ctx:              ctx,
 		ecsClient:        ecsClient,
+		cwClient:         cwClient,
 		list:             tview.NewList(),
 		searchInput:      tview.NewInputField().SetLabel("/ "),
 		currentServices:  initialServices,
@@ -46,8 +49,7 @@ func NewServiceUI(app *tview.Application, ctx context.Context, ecsClient *ecs.Cl
 
 func (s *ServiceUI) updateList() {
 	s.list.Clear()
-	for i, service := range s.filteredServices {
-		index := i
+	for _, service := range s.filteredServices {
 		status := service.Status
 		statusColor := "[white]"
 		switch strings.ToLower(status) {
@@ -59,11 +61,10 @@ func (s *ServiceUI) updateList() {
 			statusColor = "[red]"
 		}
 		s.list.AddItem(
-			fmt.Sprintf("%s (Running: %d, Desired: %d) - Status: %s%s[-]",
-				service.ServiceName, service.RunningCount, service.DesiredCount, statusColor, status),
-			"", 0, func() {
-				showServiceOptions(s.app, s.ctx, s.ecsClient, s.filteredServices[index], s.filteredServices, s.layout)
-			})
+			fmt.Sprintf("%s (Running: %d, Desired: %d) - Status: %s%s[-] | CPU: %.2f%%, Mem: %.2f%%",
+				service.ServiceName, service.RunningCount, service.DesiredCount, statusColor, status,
+				service.CPUUtilization, service.MemoryUtilization),
+			"", 0, nil)
 	}
 	s.updateHeader()
 }
@@ -118,11 +119,6 @@ func (s *ServiceUI) setupListInputCapture() {
 			switch event.Rune() {
 			case 'R': // Restart all services
 				showRestartAllServicesPrompt(s.app, s.ctx, s.ecsClient, s.currentServices, s.layout)
-			case 's': // Connect to a container
-				if s.list.GetItemCount() > 0 {
-					currentService := s.filteredServices[s.list.GetCurrentItem()]
-					showContainerExecPrompt(s.app, s.ctx, s.ecsClient, currentService)
-				}
 			case '/': // Activate search
 				s.app.SetFocus(s.searchInput)
 				return nil
@@ -139,7 +135,7 @@ func (s *ServiceUI) setupListInputCapture() {
 
 func (s *ServiceUI) startPolling() {
 	updateInterval := 10 * time.Second
-	updates := aws.PollServiceUpdates(s.ctx, s.ecsClient, s.currentServices, updateInterval)
+	updates := aws.PollServiceUpdates(s.ctx, s.ecsClient, s.cwClient, updateInterval)
 
 	go func() {
 		for updatedServices := range updates {
@@ -153,7 +149,7 @@ func (s *ServiceUI) startPolling() {
 
 func (s *ServiceUI) createLayout() *tview.Flex {
 	legend := tview.NewTextView().
-		SetText("[yellow]s[-] - Shell | [red]R[-] - Redeploy all containers | [#69359C]/[-] - Search").
+		SetText("[yellow]/[-] - Search | [red]R[-] - Redeploy all containers").
 		SetTextColor(tcell.ColorWhite).
 		SetDynamicColors(true).
 		SetTextAlign(tview.AlignCenter)
@@ -187,8 +183,8 @@ func (s *ServiceUI) createLayout() *tview.Flex {
 	return mainFlex
 }
 
-func DisplayServices(app *tview.Application, ctx context.Context, ecsClient *ecs.Client, initialServices []pkg.ServiceDetails) {
-	serviceUI := NewServiceUI(app, ctx, ecsClient, initialServices)
+func DisplayServices(app *tview.Application, ctx context.Context, ecsClient *ecs.Client, cwClient *cloudwatch.Client, initialServices []pkg.ServiceDetails) {
+	serviceUI := NewServiceUI(app, ctx, ecsClient, cwClient, initialServices)
 
 	serviceUI.updateList()
 	serviceUI.setupSearchInput()
@@ -199,36 +195,6 @@ func DisplayServices(app *tview.Application, ctx context.Context, ecsClient *ecs
 	app.SetFocus(serviceUI.list)
 }
 
-// showServiceOptions shows available options for a specific service.
-func showServiceOptions(app *tview.Application, ctx context.Context, ecsClient *ecs.Client, service pkg.ServiceDetails, services []pkg.ServiceDetails, layout *tview.Flex) {
-	modal := tview.NewModal().
-		SetText(fmt.Sprintf("Service: %s\nChoose an action:", service.ServiceName)).
-		AddButtons([]string{"Change Desired Count", "Restart Service", "Cancel"}).
-		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-			switch buttonLabel {
-			case "Change Desired Count":
-				showDesiredCountPrompt(app, ctx, ecsClient, service, services, layout)
-			case "Restart Service":
-				restartService(app, ctx, ecsClient, service, layout)
-			default:
-				app.SetRoot(layout, true)
-			}
-		})
-
-	app.SetRoot(modal, false)
-}
-
-// restartService redeploys only the selected service
-func restartService(app *tview.Application, ctx context.Context, ecsClient *ecs.Client, service pkg.ServiceDetails, layout *tview.Flex) {
-	err := aws.RestartService(ctx, ecsClient, service.ServiceName, service.Cluster)
-	if err != nil {
-		showMessage(app, fmt.Sprintf("Failed to restart service: %v", err), layout)
-	} else {
-		showMessage(app, fmt.Sprintf("Service %s has been restarted.", service.ServiceName), layout)
-	}
-}
-
-// showRestartAllServicesPrompt shows a confirmation prompt to restart all services.
 func showRestartAllServicesPrompt(app *tview.Application, ctx context.Context, ecsClient *ecs.Client, services []pkg.ServiceDetails, layout *tview.Flex) {
 	modal := tview.NewModal().
 		SetText("Are you sure you want to restart all services?").
@@ -243,67 +209,25 @@ func showRestartAllServicesPrompt(app *tview.Application, ctx context.Context, e
 	app.SetRoot(modal, false)
 }
 
-// restartAllServices triggers redeploys of all services in the background
 func restartAllServices(app *tview.Application, ctx context.Context, ecsClient *ecs.Client, services []pkg.ServiceDetails, layout *tview.Flex) {
-	var wg sync.WaitGroup
-	failedServices := make(chan string, len(services))
+	failedServices := []string{}
 
 	for _, service := range services {
-		wg.Add(1)
-		go func(s pkg.ServiceDetails) {
-			defer wg.Done()
-			if err := aws.RestartService(ctx, ecsClient, s.ServiceName, s.Cluster); err != nil {
-				failedServices <- s.ServiceName
-			}
-		}(service)
-	}
-
-	wg.Wait()
-	close(failedServices)
-
-	failed := make([]string, 0, len(services))
-	for s := range failedServices {
-		failed = append(failed, s)
+		err := aws.RestartService(ctx, ecsClient, service.ServiceName, service.Cluster)
+		if err != nil {
+			failedServices = append(failedServices, service.ServiceName)
+		}
 	}
 
 	app.QueueUpdateDraw(func() {
-		if len(failed) > 0 {
-			showMessage(app, fmt.Sprintf("Failed to restart services: %v", failed), layout)
+		if len(failedServices) > 0 {
+			showMessage(app, fmt.Sprintf("Failed to restart services: %v", failedServices), layout)
 		} else {
 			showMessage(app, "All services have been restarted successfully.", layout)
 		}
 	})
 }
 
-// showDesiredCountPrompt shows a prompt to change the desired count for the selected service
-func showDesiredCountPrompt(app *tview.Application, ctx context.Context, ecsClient *ecs.Client, service pkg.ServiceDetails, services []pkg.ServiceDetails, layout *tview.Flex) {
-	inputField := tview.NewInputField().
-		SetLabel(fmt.Sprintf("Change desired count for %s: ", service.ServiceName)).
-		SetFieldWidth(5)
-
-	inputField.SetDoneFunc(func(key tcell.Key) {
-		if key == tcell.KeyEnter {
-			newDesiredCount, err := strconv.Atoi(inputField.GetText())
-			if err != nil {
-				showMessage(app, "Invalid input. Please enter a positive integer.", layout)
-				return
-			}
-
-			err = aws.UpdateServiceDesiredCount(ctx, ecsClient, service.ServiceName, service.Cluster, int64(newDesiredCount))
-			if err != nil {
-				showMessage(app, fmt.Sprintf("Failed to update service: %v", err), layout)
-				return
-			}
-
-			showMessage(app, fmt.Sprintf("Updated %s to desired count %d. The running count will update shortly.",
-				service.ServiceName, newDesiredCount), layout)
-		}
-	})
-
-	app.SetRoot(inputField, true)
-}
-
-// showMessage shows a modal with a message and an OK button that returns to the service list.
 func showMessage(app *tview.Application, message string, previousView tview.Primitive) {
 	modal := tview.NewModal().
 		SetText(message).
@@ -313,62 +237,4 @@ func showMessage(app *tview.Application, message string, previousView tview.Prim
 		})
 
 	app.SetRoot(modal, false)
-}
-
-// showContainerExecPrompt prompts for the container and command, then connects to the container using ECS Exec.
-func showContainerExecPrompt(app *tview.Application, ctx context.Context, ecsClient *ecs.Client, service pkg.ServiceDetails) {
-	// Fetch the task associated with the service
-	taskArn, err := aws.GetTaskArnForService(ctx, ecsClient, service.Cluster, service.ServiceName)
-	if err != nil {
-		showMessage(app, fmt.Sprintf("Failed to fetch task for service: %v", err), nil)
-		return
-	}
-
-	// Fetch container names for the task
-	containerNames, err := aws.GetTaskDetails(ctx, ecsClient, service.Cluster, taskArn)
-	if err != nil {
-		showMessage(app, fmt.Sprintf("Failed to fetch containers for task: %v", err), nil)
-		return
-	}
-
-	// Present container selection modal
-	showContainerSelection(app, ctx, ecsClient, service.Cluster, taskArn, containerNames)
-}
-
-// showContainerSelection presents a list of containers for the user to choose from.
-func showContainerSelection(app *tview.Application, ctx context.Context, ecsClient *ecs.Client, cluster, taskArn string, containerNames []string) {
-	list := tview.NewList()
-	for _, containerName := range containerNames {
-		container := containerName // Capture the current containerName in the loop
-		list.AddItem(containerName, "", 0, func() {
-			// Show a confirmation modal
-			modal := tview.NewModal().
-				SetText(fmt.Sprintf("Connect to container %s?", container)).
-				AddButtons([]string{"Connect", "Cancel"}).
-				SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-					if buttonLabel == "Connect" {
-						// Connect to the selected container
-						command := "/bin/sh"
-						err := aws.ExecCommandToContainer(cluster, taskArn, container, command)
-						if err != nil {
-							showMessage(app, fmt.Sprintf("Failed to connect to container: %v", err), list)
-						} else {
-							showMessage(app, fmt.Sprintf("Connecting to container %s...", container), list)
-						}
-					} else {
-						// Return to the container selection list
-						app.SetRoot(list, true)
-					}
-				})
-
-			app.SetRoot(modal, true)
-		})
-	}
-
-	list.SetDoneFunc(func() {
-		// Return to the previous screen
-		app.Stop()
-	})
-
-	app.SetRoot(list, true)
 }

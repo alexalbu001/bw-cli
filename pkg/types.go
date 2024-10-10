@@ -12,9 +12,11 @@ type ServiceOutput struct {
 
 // ServiceDetails contains details about ECS services, including the cluster they belong to
 type ServiceDetails struct {
-	Cluster      string `json:"cluster"`
-	ServiceName  string `json:"serviceName"`
-	RunningCount int64  `json:"runningCount"`
-	DesiredCount int64  `json:"desiredCount"`
-	Status       string `json:"status"` // Add this field to store the deployment status
+	Cluster           string  `json:"cluster"`
+	ServiceName       string  `json:"serviceName"`
+	RunningCount      int64   `json:"runningCount"`
+	DesiredCount      int64   `json:"desiredCount"`
+	Status            string  `json:"status"`
+	CPUUtilization    float64 `json:"cpuUtilization"`
+	MemoryUtilization float64 `json:"memoryUtilization"`
 }

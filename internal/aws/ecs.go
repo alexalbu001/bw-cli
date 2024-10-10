@@ -3,13 +3,13 @@ package aws
 import (
 	"context"
 	"fmt"
-	"os"
+	"log"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/alexalbu001/bw-cli/pkg"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 )
 
@@ -26,7 +26,7 @@ type ECSClientAPI interface {
 }
 
 // GetAllServiceDetails fetches services with running and desired count details from all clusters in parallel.
-func GetAllServiceDetails(ctx context.Context, ecsClient ECSClientAPI) ([]pkg.ServiceDetails, error) {
+func GetAllServiceDetails(ctx context.Context, ecsClient ECSClientAPI, cwClient *cloudwatch.Client) ([]pkg.ServiceDetails, error) {
 	clusters, err := listClusters(ctx, ecsClient)
 	if err != nil {
 		return nil, err
@@ -39,8 +39,9 @@ func GetAllServiceDetails(ctx context.Context, ecsClient ECSClientAPI) ([]pkg.Se
 		wg.Add(1)
 		go func(cluster string) {
 			defer wg.Done()
-			services, err := describeServicesInBatches(cluster, ctx, ecsClient)
+			services, err := describeServicesInBatches(cluster, ctx, ecsClient, cwClient)
 			if err != nil {
+				log.Printf("Error describing services for cluster %s: %v", cluster, err)
 				return
 			}
 			serviceCh <- services
@@ -58,7 +59,7 @@ func GetAllServiceDetails(ctx context.Context, ecsClient ECSClientAPI) ([]pkg.Se
 	return allServices, nil
 }
 
-func GetServiceDetails(ctx context.Context, ecsClient ECSClientAPI, serviceName, cluster string) (pkg.ServiceDetails, error) {
+func GetServiceDetails(ctx context.Context, ecsClient ECSClientAPI, cwClient *cloudwatch.Client, serviceName, cluster string) (pkg.ServiceDetails, error) {
 	input := &ecs.DescribeServicesInput{
 		Cluster:  &cluster,
 		Services: []string{serviceName},
@@ -74,12 +75,21 @@ func GetServiceDetails(ctx context.Context, ecsClient ECSClientAPI, serviceName,
 	}
 
 	service := output.Services[0]
+
+	metrics, err := getServiceMetrics(ctx, cwClient, cluster, serviceName)
+	if err != nil {
+		log.Printf("Error fetching metrics for service %s: %v", serviceName, err)
+		metrics = &ServiceMetrics{CPUUtilization: 0, MemoryUtilization: 0}
+	}
+
 	return pkg.ServiceDetails{
-		ServiceName:  *service.ServiceName,
-		RunningCount: int64(service.RunningCount),
-		DesiredCount: int64(service.DesiredCount),
-		Status:       *service.Status,
-		Cluster:      cluster,
+		ServiceName:       *service.ServiceName,
+		RunningCount:      int64(service.RunningCount),
+		DesiredCount:      int64(service.DesiredCount),
+		Status:            *service.Status,
+		Cluster:           cluster,
+		CPUUtilization:    metrics.CPUUtilization,
+		MemoryUtilization: metrics.MemoryUtilization,
 	}, nil
 }
 
@@ -117,7 +127,7 @@ func listServices(ctx context.Context, ecsClient ECSClientAPI, cluster string) (
 }
 
 // describeServicesInBatches describes services for a given cluster in batches.
-func describeServicesInBatches(cluster string, ctx context.Context, ecsClient ECSClientAPI) ([]pkg.ServiceDetails, error) {
+func describeServicesInBatches(cluster string, ctx context.Context, ecsClient ECSClientAPI, cwClient *cloudwatch.Client) ([]pkg.ServiceDetails, error) {
 	serviceArns, err := listServices(ctx, ecsClient, cluster)
 	if err != nil || len(serviceArns) == 0 {
 		return nil, err
@@ -143,12 +153,20 @@ func describeServicesInBatches(cluster string, ctx context.Context, ecsClient EC
 		}
 
 		for _, service := range output.Services {
+			metrics, err := getServiceMetrics(ctx, cwClient, cluster, *service.ServiceName)
+			if err != nil {
+				log.Printf("Error fetching metrics for service %s: %v", *service.ServiceName, err)
+				metrics = &ServiceMetrics{CPUUtilization: 0, MemoryUtilization: 0}
+			}
+
 			services = append(services, pkg.ServiceDetails{
-				ServiceName:  *service.ServiceName,
-				RunningCount: int64(service.RunningCount),
-				DesiredCount: int64(service.DesiredCount),
-				Status:       *service.Status,
-				Cluster:      cluster,
+				ServiceName:       *service.ServiceName,
+				RunningCount:      int64(service.RunningCount),
+				DesiredCount:      int64(service.DesiredCount),
+				Status:            *service.Status,
+				Cluster:           cluster,
+				CPUUtilization:    metrics.CPUUtilization,
+				MemoryUtilization: metrics.MemoryUtilization,
 			})
 		}
 	}
@@ -217,53 +235,6 @@ func GetServiceDeploymentStatus(ctx context.Context, ecsClient ECSClientAPI, ser
 	return *deployment.Status, nil
 }
 
-// ExecCommandToContainer executes a command inside the ECS container using ECS Exec.
-func ExecCommandToContainer(cluster, task, container, command string) error {
-	fmt.Print("\033[2J") // Clear the screen
-	fmt.Print("\033[H")  // Move cursor to top-left corner
-
-	args := []string{
-		"aws",
-		"ecs", "execute-command",
-		"--cluster", cluster,
-		"--task", task,
-		"--container", container,
-		"--interactive",
-		"--command", command,
-	}
-
-	err := syscall.Exec("/usr/local/bin/aws", args, os.Environ())
-	if err != nil {
-		return fmt.Errorf("failed to execute command in container: %v", err)
-	}
-
-	return nil
-}
-
-// GetTaskDetails fetches details for a running task, including the container names.
-func GetTaskDetails(ctx context.Context, ecsClient ECSClientAPI, cluster, taskArn string) ([]string, error) {
-	input := &ecs.DescribeTasksInput{
-		Cluster: &cluster,
-		Tasks:   []string{taskArn},
-	}
-
-	output, err := ecsClient.DescribeTasks(ctx, input)
-	if err != nil {
-		return nil, fmt.Errorf("error describing task %s: %v", taskArn, err)
-	}
-
-	if len(output.Tasks) == 0 {
-		return nil, fmt.Errorf("no task details found for task %s", taskArn)
-	}
-
-	var containerNames []string
-	for _, container := range output.Tasks[0].Containers {
-		containerNames = append(containerNames, *container.Name)
-	}
-
-	return containerNames, nil
-}
-
 // GetTaskArnForService fetches the ARN of the running task for the specified service.
 func GetTaskArnForService(ctx context.Context, ecsClient ECSClientAPI, cluster, serviceName string) (string, error) {
 	input := &ecs.ListTasksInput{
@@ -284,7 +255,7 @@ func GetTaskArnForService(ctx context.Context, ecsClient ECSClientAPI, cluster, 
 }
 
 // PollServiceUpdates continuously polls for updates to the given services and sends updates through a channel.
-func PollServiceUpdates(ctx context.Context, ecsClient ECSClientAPI, services []pkg.ServiceDetails, updateInterval time.Duration) chan []pkg.ServiceDetails {
+func PollServiceUpdates(ctx context.Context, ecsClient ECSClientAPI, cwClient *cloudwatch.Client, updateInterval time.Duration) chan []pkg.ServiceDetails {
 	updates := make(chan []pkg.ServiceDetails)
 
 	go func() {
@@ -297,16 +268,12 @@ func PollServiceUpdates(ctx context.Context, ecsClient ECSClientAPI, services []
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				updatedServices := make([]pkg.ServiceDetails, len(services))
-				for i, service := range services {
-					details, err := GetServiceDetails(ctx, ecsClient, service.ServiceName, service.Cluster)
-					if err != nil {
-						// Log the error, but continue with other services
-						continue
-					}
-					updatedServices[i] = details
+				services, err := GetAllServiceDetails(ctx, ecsClient, cwClient)
+				if err != nil {
+					log.Printf("Error fetching service details: %v", err)
+					continue
 				}
-				updates <- updatedServices
+				updates <- services
 			}
 		}
 	}()
